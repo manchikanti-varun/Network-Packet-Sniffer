@@ -1,0 +1,14 @@
+# Ignore virtual environments
+venv/
+.network-packet-sniffer/
+
+# Byte-compiled / cached
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+*.dll
+
+# Ignore system files
+.DS_Store
+Thumbs.db
