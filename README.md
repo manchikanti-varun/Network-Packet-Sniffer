@@ -1,4 +1,5 @@
 **Network Packet Sniffer**
+
 A simple network packet sniffer built with Python and Scapy. It captures and analyzes network packets in real-time across multiple interfaces. Useful for network monitoring, security analysis, and learning network protocols.
 
 **🚀 Features**
@@ -27,6 +28,7 @@ pip install -r requirements.txt
 ```
 
 **🛠 Setup & Usage**
+
 **1️⃣ Clone the Repository**  
 ```sh
 git clone https://github.com/YOUR_USERNAME/network-packet-sniffer.git
@@ -73,7 +75,3 @@ Ether / IP / UDP 10.0.0.2:68 > 10.0.0.1:67 DHCP
 
 **🔒 Disclaimer**
 This tool is intended for educational and ethical purposes **only**. Unauthorized packet sniffing on networks you do not own or have permission to monitor **is illegal**.
-
-**🐝 License**
-This project is **open-source** and available under the **MIT License**.
-
