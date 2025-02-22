@@ -3,12 +3,14 @@
 A simple network packet sniffer built with Python and Scapy. It captures and analyzes network packets in real-time across multiple interfaces. Useful for network monitoring, security analysis, and learning network protocols.
 
 **🚀 Features**
+
 ✔️ Capture packets on a selected network interface  
 ✔️ Capture packets on all interfaces simultaneously  
 ✔️ Filter packets based on protocols (TCP, UDP, ICMP, etc.)  
 ✔️ Display packet details in a readable format  
 
 **📌 Requirements**
+
 🔹 Python 3.8+  
 🔹 Virtual Environment (venv)  
 🔹 Required Python modules:  
@@ -31,7 +33,7 @@ pip install -r requirements.txt
 
 **1️⃣ Clone the Repository**  
 ```sh
-git clone https://github.com/YOUR_USERNAME/network-packet-sniffer.git
+git clone https://github.com/manchikanti-varun/Network-Packet-Sniffer.git
 cd network-packet-sniffer
 ```
 
