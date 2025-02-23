@@ -21,4 +21,5 @@ logs/
 # Ignore PCAP files
 *.pcap
 *.pcapng
-captures/
+src/captures/
+src/captured_packets.pcap

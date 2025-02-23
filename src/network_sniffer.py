@@ -10,7 +10,7 @@ from scapy.all import sniff, get_if_list, wrpcap, IP, TCP, UDP, ICMP, DNS, DNSQR
 
 # Setup Logging
 logging.basicConfig(
-    filename="packet_sniffer.log",
+    filename="logs/packet_sniffer.log",
     level=logging.INFO,
     format="%(message)s"
 )
@@ -23,7 +23,7 @@ def get_ist_time():
 traffic_data = {"TCP": 0, "UDP": 0, "ICMP": 0, "Other": 0}
 last_update_time = time.time()
 captured_packets = []
-pcap_filename = "captured_packets.pcap"
+pcap_filename = "src/captured_packets.pcap"
 
 def list_interfaces():
     interfaces = get_if_list()
