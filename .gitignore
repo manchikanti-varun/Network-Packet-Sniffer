@@ -12,3 +12,13 @@ __pycache__/
 # Ignore system files
 .DS_Store
 Thumbs.db
+
+# Ignore log files
+*.log
+logs/
+*.log.*
+
+# Ignore PCAP files
+*.pcap
+*.pcapng
+captures/
