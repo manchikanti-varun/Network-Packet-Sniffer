@@ -58,7 +58,7 @@ def load_config():
                 'update_interval': '1.0',
                 'save_interval': '10',
                 'plot_style': 'default',
-                'max_packets': '10000'  # Fixed unterminated string
+                'max_packets': '10000'
             }
             with open('sniffer_config.ini', 'w') as configfile:
                 config.write(configfile)
@@ -198,29 +198,57 @@ def packet_callback(packet):
         logging.error(f"[{get_ist_time()}] Error in packet callback: {e}")
 
 def update_graph(frame):
-    """Update the live traffic and packet size distribution plots."""
+    """Update the live traffic and packet size distribution plots with a table."""
     try:
         plt.clf()
         plt.style.use(validate_plot_style(PLOT_STYLE))
 
-        # Subplot 1: Bandwidth by Protocol
-        plt.subplot(2, 1, 1)
+        # Create a grid layout: 2 rows, 2 columns (left for plots, right for table)
+        fig = plt.gcf()
+        fig.set_size_inches(12, 8)
+
+        # Subplot 1: Bandwidth by Protocol (top left)
+        ax1 = plt.subplot2grid((2, 2), (0, 0))
         protocols = list(traffic_data.keys())
         bandwidth = [(traffic_data[key] * 8) / 1_000_000 for key in protocols]
-        sns.barplot(x=protocols, y=bandwidth, palette="viridis")
-        plt.xlabel("Protocol")
-        plt.ylabel("Bandwidth (Mbps)")
-        plt.title("Live Network Traffic (Mbps)")
-        plt.xticks(rotation=45)
-        plt.ylim(0, max(bandwidth, default=1) * 1.2)
+        sns.barplot(x=protocols, y=bandwidth, palette="viridis", ax=ax1)
+        ax1.set_xlabel("Protocol")
+        ax1.set_ylabel("Bandwidth (Mbps)")
+        ax1.set_title("Live Network Traffic (Mbps)")
+        ax1.tick_params(axis='x', rotation=45)
+        ax1.set_ylim(0, max(bandwidth, default=1) * 1.2)
 
-        # Subplot 2: Packet Size Distribution
-        plt.subplot(2, 1, 2)
+        # Subplot 2: Packet Size Distribution (bottom left)
+        ax2 = plt.subplot2grid((2, 2), (1, 0))
         if packet_sizes:
-            sns.histplot(packet_sizes[-1000:], bins=30, kde=True, color="purple")
-            plt.xlabel("Packet Size (Bytes)")
-            plt.ylabel("Count")
-            plt.title("Packet Size Distribution (Last 1000 Packets)")
+            sns.histplot(packet_sizes[-1000:], bins=30, kde=True, color="purple", ax=ax2)
+            ax2.set_xlabel("Packet Size (Bytes)")
+            ax2.set_ylabel("Count")
+            ax2.set_title("Packet Size Distribution (Last 1000 Packets)")
+
+        # Table: Packet Statistics (right side, spanning both rows)
+        ax3 = plt.subplot2grid((2, 2), (0, 1), rowspan=2)
+        ax3.axis('off')  # Hide axes for table
+        table_data = [
+            ["Protocol", "Bandwidth (Mbps)", "Packet Count"]
+        ]
+        for key in traffic_data:
+            bandwidth = (traffic_data[key] * 8) / 1_000_000
+            proto_value = int(key.split('_')[-1]) if key.startswith('Other') else {'TCP': 6, 'UDP': 17, 'ICMP': 1}.get(key, 0)
+            packet_count = len([p for p in captured_packets if p.haslayer(IP) and p[IP].proto == proto_value])
+            table_data.append([key, f"{bandwidth:.2f}", f"{packet_count}"])
+        
+        table = ax3.table(
+            cellText=table_data,
+            cellLoc='center',
+            loc='center',
+            colWidths=[0.4, 0.3, 0.3]
+        )
+        table.auto_set_font_size(False)
+        table.set_fontsize(10)
+        table.scale(1, 1.5)  # Adjust table size
+        ax3.set_title("Packet Statistics")
+
         plt.tight_layout()
     except Exception as e:
         logging.error(f"[{get_ist_time()}] Error updating graph: {e}")
@@ -293,7 +321,7 @@ if __name__ == "__main__":
         report_thread.start()
 
         plt.style.use(validate_plot_style(PLOT_STYLE))
-        fig = plt.figure(figsize=(10, 8))
+        fig = plt.figure(figsize=(12, 8))
         ani = FuncAnimation(fig, update_graph, interval=UPDATE_INTERVAL * 1000)
         plt.show()
     except KeyboardInterrupt:
