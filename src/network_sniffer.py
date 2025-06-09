@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
 from datetime import datetime
-from collections import defaultdict
+from collections import defaultdict, Counter
 from scapy.all import sniff, get_if_list, wrpcap, IP, TCP, UDP, ICMP, DNS, DNSQR, Raw
 import configparser
 import os
@@ -38,8 +38,12 @@ PLOT_STYLE = config.get('Settings', 'plot_style', fallback='default')
 MAX_PACKETS = config.getint('Settings', 'max_packets', fallback=10000)
 
 # Global variables
-traffic_data = defaultdict(float)
-packet_sizes = []
+traffic_data = defaultdict(float)  # Total bytes per protocol
+packet_sizes_by_proto = defaultdict(list)  # Packet sizes per protocol
+source_ips = defaultdict(Counter)  # Source IPs per protocol
+packet_types = defaultdict(Counter)  # Packet types per protocol
+domains_by_proto = defaultdict(Counter)  # Domains per protocol
+data_transferred = defaultdict(Counter)  # Data transferred (URLs, payloads, etc.) per protocol
 captured_packets = []
 stats_history = []
 last_update_time = time.time()
@@ -115,6 +119,30 @@ def get_ip_geolocation(ip):
         return "Unknown"
     return "Unknown"
 
+def extract_tls_sni(packet):
+    """Extract Server Name Indication (SNI) from TLS Client Hello."""
+    try:
+        if packet.haslayer(Raw):
+            payload = packet[Raw].load
+            # Check for TLS Client Hello (handshake type 0x01)
+            if payload[0:1] == b'\x16' and payload[5:6] == b'\x01':
+                # Skip to extensions (complex parsing simplified)
+                offset = 43  # Skip fixed-length headers (handshake, session ID, etc.)
+                if len(payload) > offset:
+                    ext_len = int.from_bytes(payload[offset:offset+2], 'big')
+                    offset += 2
+                    while offset < len(payload) - 2:
+                        ext_type = int.from_bytes(payload[offset:offset+2], 'big')
+                        ext_len = int.from_bytes(payload[offset+2:offset+4], 'big')
+                        if ext_type == 0:  # SNI extension
+                            sni_offset = offset + 9  # Skip extension headers
+                            sni = payload[sni_offset:sni_offset+ext_len-5].decode(errors='ignore')
+                            return sni
+                        offset += 4 + ext_len
+    except:
+        pass
+    return None
+
 def analyze_packet(packet):
     """Analyze packet details and log relevant information."""
     if not packet.haslayer(IP):
@@ -126,6 +154,89 @@ def analyze_packet(packet):
         protocol = packet[IP].proto
         pkt_size = len(packet)
         ist_time = get_ist_time()
+        pkt_type = "Other"
+        domain = None
+        transferred_data = None
+
+        # Determine packet type and extract domain/data
+        if packet.haslayer(DNS) and packet.haslayer(DNSQR):
+            pkt_type = "DNS Query"
+            try:
+                domain = packet[DNSQR].qname.decode('utf-8', errors='ignore').rstrip('.')
+                transferred_data = f"DNS Query: {domain}"
+            except:
+                domain = "Unknown"
+                transferred_data = "DNS Query"
+        elif packet.haslayer(TCP):
+            # Check for HTTPS (TLS) via port or SNI
+            if packet[TCP].dport == 443 or packet[TCP].sport == 443:
+                sni = extract_tls_sni(packet)
+                if sni:
+                    domain = sni
+                    transferred_data = f"HTTPS TLS: {sni}"
+                    pkt_type = "TLS"
+            # Check for HTTP
+            if packet.haslayer(Raw):
+                try:
+                    payload = packet[Raw].load.decode('utf-8', errors='ignore')
+                    if "HTTP" in payload:
+                        pkt_type = "HTTP"
+                        # Extract HTTP details
+                        headers = {}
+                        url = None
+                        content_type = None
+                        for line in payload.split('\n'):
+                            if line.startswith(('GET ', 'POST ')):
+                                parts = line.split()
+                                if len(parts) > 1:
+                                    url_path = parts[1]
+                                    for h in payload.split('\n'):
+                                        if h.lower().startswith('host:'):
+                                            host = h.split(':', 1)[1].strip()
+                                            url = f"http://{host}{url_path}"
+                                            domain = host
+                                            break
+                            elif ': ' in line:
+                                key, value = line.split(': ', 1)
+                                headers[key.lower()] = value.strip()
+                                if key.lower() == 'content-type':
+                                    content_type = value.strip()
+                        # Summarize transferred data
+                        if url:
+                            transferred_data = f"URL: {url}"
+                            if content_type:
+                                transferred_data += f", Type: {content_type}"
+                        elif content_type:
+                            transferred_data = f"Content-Type: {content_type}"
+                        elif payload.strip():
+                            # Truncate payload for display
+                            snippet = ''.join(c for c in payload[:50] if c.isprintable())
+                            transferred_data = f"Payload: {snippet}..."
+                except:
+                    pass
+            elif pkt_type != "TLS":
+                pkt_type = f"TCP Flags: {packet[TCP].flags}"
+                if packet.haslayer(Raw):
+                    try:
+                        payload = packet[Raw].load.decode('utf-8', errors='ignore')
+                        if payload.strip():
+                            snippet = ''.join(c for c in payload[:50] if c.isprintable())
+                            transferred_data = f"Payload: {snippet}..."
+                    except:
+                        pass
+        elif packet.haslayer(UDP) and not packet.haslayer(DNS):
+            pkt_type = "UDP"
+            if packet.haslayer(Raw):
+                try:
+                    payload = packet[Raw].load.decode('utf-8', errors='ignore')
+                    if payload.strip():
+                        snippet = ''.join(c for c in payload[:50] if c.isprintable())
+                        transferred_data = f"Payload: {snippet}..."
+                except:
+                    pass
+        elif packet.haslayer(ICMP):
+            pkt_type = "ICMP"
+            transferred_data = f"Type: {packet[ICMP].type}, Code: {packet[ICMP].code}"
 
         # Geolocation for non-private IPs
         if not src_ip.startswith(("192.", "10.", "172.")):
@@ -134,30 +245,29 @@ def analyze_packet(packet):
             print(log_entry)
             logging.info(log_entry)
 
-        # Protocol-specific analysis
-        if packet.haslayer(Raw):
-            try:
-                payload = packet[Raw].load.decode(errors="ignore")
-                if "HTTP" in payload:
-                    log_entry = f"[{ist_time}] 📡 HTTP Request: {payload[:100]}..."
-                    print(log_entry)
-                    logging.info(log_entry)
-            except:
-                pass
-
-        if packet.haslayer(DNS) and packet.haslayer(DNSQR):
-            dns_query = packet[DNSQR].qname.decode(errors="ignore")
-            log_entry = f"[{ist_time}] 🔍 DNS Query: {dns_query}"
+        # Log packet details
+        if domain:
+            log_entry = f"[{ist_time}] 🌐 Domain: {domain}"
+            print(log_entry)
+            logging.info(log_entry)
+        if transferred_data:
+            log_entry = f"[{ist_time}] 📦 {transferred_data}"
+            print(log_entry)
+            logging.info(log_entry)
+        if pkt_type == "DNS Query":
+            log_entry = f"[{ist_time}] 🔍 {transferred_data}"
+            print(log_entry)
+            logging.info(log_entry)
+        elif pkt_type == "HTTP":
+            log_entry = f"[{ist_time}] 📡 HTTP Request: {payload[:100] if 'payload' in locals() else 'Unknown'}..."
+            print(log_entry)
+            logging.info(log_entry)
+        elif pkt_type.startswith("TCP Flags") or pkt_type == "TLS":
+            log_entry = f"[{ist_time}] 🚩 {pkt_type}"
             print(log_entry)
             logging.info(log_entry)
 
-        if packet.haslayer(TCP):
-            flags = packet[TCP].flags
-            log_entry = f"[{ist_time}] 🚩 TCP Flags: {flags}"
-            print(log_entry)
-            logging.info(log_entry)
-
-        return protocol, pkt_size
+        return protocol, pkt_size, src_ip, pkt_type, domain, transferred_data
     except Exception as e:
         logging.error(f"[{get_ist_time()}] Error analyzing packet: {e}")
         return None
@@ -174,10 +284,16 @@ def packet_callback(packet):
 
         result = analyze_packet(packet)
         if result:
-            proto, pkt_size = result
+            proto, pkt_size, src_ip, pkt_type, domain, transferred_data = result
             proto_name = {6: "TCP", 17: "UDP", 1: "ICMP"}.get(proto, f"Other_{proto}")
             traffic_data[proto_name] += pkt_size
-            packet_sizes.append(pkt_size)
+            packet_sizes_by_proto[proto_name].append(pkt_size)
+            source_ips[proto_name][src_ip] += 1
+            packet_types[proto_name][pkt_type] += 1
+            if domain:
+                domains_by_proto[proto_name][domain] += 1
+            if transferred_data:
+                data_transferred[proto_name][transferred_data] += 1
             captured_packets.append(packet)
 
             if current_time - last_update_time >= UPDATE_INTERVAL:
@@ -205,7 +321,7 @@ def update_graph(frame):
 
         # Create a grid layout: 2 rows, 2 columns (left for plots, right for table)
         fig = plt.gcf()
-        fig.set_size_inches(12, 8)
+        fig.set_size_inches(16, 8)  # Increased width for extra column
 
         # Subplot 1: Bandwidth by Protocol (top left)
         ax1 = plt.subplot2grid((2, 2), (0, 0))
@@ -220,32 +336,39 @@ def update_graph(frame):
 
         # Subplot 2: Packet Size Distribution (bottom left)
         ax2 = plt.subplot2grid((2, 2), (1, 0))
-        if packet_sizes:
-            sns.histplot(packet_sizes[-1000:], bins=30, kde=True, color="purple", ax=ax2)
-            ax2.set_xlabel("Packet Size (Bytes)")
-            ax2.set_ylabel("Count")
-            ax2.set_title("Packet Size Distribution (Last 1000 Packets)")
+        if packet_sizes_by_proto:
+            all_sizes = [size for sizes in packet_sizes_by_proto.values() for size in sizes[-1000:]]
+            if all_sizes:
+                sns.histplot(all_sizes, bins=30, kde=True, color="purple", ax=ax2)
+                ax2.set_xlabel("Packet Size (Bytes)")
+                ax2.set_ylabel("Count")
+                ax2.set_title("Packet Size Distribution (Last 1000 Packets)")
 
         # Table: Packet Statistics (right side, spanning both rows)
         ax3 = plt.subplot2grid((2, 2), (0, 1), rowspan=2)
         ax3.axis('off')  # Hide axes for table
         table_data = [
-            ["Protocol", "Bandwidth (Mbps)", "Packet Count"]
+            ["Protocol", "Bandwidth (Mbps)", "Packet Count", "Source IP", "Avg Size", "Packet Type", "Domain/URL", "Data Transferred"]
         ]
         for key in traffic_data:
             bandwidth = (traffic_data[key] * 8) / 1_000_000
             proto_value = int(key.split('_')[-1]) if key.startswith('Other') else {'TCP': 6, 'UDP': 17, 'ICMP': 1}.get(key, 0)
             packet_count = len([p for p in captured_packets if p.haslayer(IP) and p[IP].proto == proto_value])
-            table_data.append([key, f"{bandwidth:.2f}", f"{packet_count}"])
+            avg_size = np.mean(packet_sizes_by_proto[key]) if packet_sizes_by_proto[key] else 0
+            top_ip = source_ips[key].most_common(1)[0][0] if source_ips[key] else "Unknown"
+            top_type = packet_types[key].most_common(1)[0][0] if packet_types[key] else "Unknown"
+            top_domain = domains_by_proto[key].most_common(1)[0][0] if domains_by_proto[key] else "N/A"
+            top_data = data_transferred[key].most_common(1)[0][0] if data_transferred[key] else "N/A"
+            table_data.append([key, f"{bandwidth:.2f}", f"{packet_count}", top_ip, f"{avg_size:.1f}", top_type, top_domain, top_data])
         
         table = ax3.table(
             cellText=table_data,
             cellLoc='center',
             loc='center',
-            colWidths=[0.4, 0.3, 0.3]
+            colWidths=[0.1, 0.12, 0.08, 0.12, 0.08, 0.12, 0.15, 0.23]
         )
         table.auto_set_font_size(False)
-        table.set_fontsize(10)
+        table.set_fontsize(8)
         table.scale(1, 1.5)  # Adjust table size
         ax3.set_title("Packet Statistics")
 
@@ -270,21 +393,24 @@ def save_pcap():
 def generate_report():
     """Generate a JSON report of traffic statistics."""
     try:
+        ist_time = get_ist_time()  # Define ist_time
         report = {
-            "timestamp": get_ist_time(),
+            "timestamp": ist_time,
             "total_packets": len(captured_packets),
             "traffic_summary": {key: (traffic_data[key] * 8) / 1_000_000 for key in traffic_data},
             "packet_size_stats": {
-                "mean": float(np.mean(packet_sizes)) if packet_sizes else 0,
-                "max": float(max(packet_sizes, default=0)),
-                "min": float(min(packet_sizes, default=0)),
-                "std": float(np.std(packet_sizes)) if packet_sizes else 0
+                "mean": float(np.mean([size for sizes in packet_sizes_by_proto.values() for size in sizes])) if packet_sizes_by_proto else 0,
+                "max": float(max([size for sizes in packet_sizes_by_proto.values() for size in sizes], default=0)),
+                "min": float(min([size for sizes in packet_sizes_by_proto.values() for size in sizes], default=0)),
+                "std": float(np.std([size for sizes in packet_sizes_by_proto.values() for size in sizes])) if packet_sizes_by_proto else 0
             },
-            "history": stats_history[-10:]
+            "history": stats_history[-10:],
+            "top_domains": {key: dict(domains_by_proto[key].most_common(3)) for key in domains_by_proto},
+            "top_data_transferred": {key: dict(data_transferred[key].most_common(3)) for key in data_transferred}
         }
         with open('traffic_report.json', 'w') as f:
             json.dump(report, f, indent=4)
-        log_entry = f"[{get_ist_time()}] 📄 Generated traffic report: traffic_report.json"
+        log_entry = f"[{ist_time}] 📄 Generated traffic report: traffic_report.json"
         print(log_entry)
         logging.info(log_entry)
     except Exception as e:
@@ -321,7 +447,7 @@ if __name__ == "__main__":
         report_thread.start()
 
         plt.style.use(validate_plot_style(PLOT_STYLE))
-        fig = plt.figure(figsize=(12, 8))
+        fig = plt.figure(figsize=(16, 8))
         ani = FuncAnimation(fig, update_graph, interval=UPDATE_INTERVAL * 1000)
         plt.show()
     except KeyboardInterrupt:
